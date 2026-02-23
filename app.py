@@ -26,8 +26,8 @@ logging.basicConfig(
 # 2. ЗАГРУЗКА YOLO МОДЕЛИ
 # ---------------------------------------------------------
 try:
-    model = YOLO("yolo11s.pt")
-    logging.info("✓ YOLO v11 модель загружена")
+    model = YOLO("yolo11s.onnx", task="detect")
+    logging.info("✓ YOLO v11 (ONNX) модель загружена")
 except Exception as e:
     logging.error(f"✗ Ошибка загрузки модели: {e}")
     model = None
@@ -345,91 +345,144 @@ class ParkingSystem:
 
 
 # ---------------------------------------------------------
-# 6. ПОТОК ОБРАБОТКИ ВИДЕО
+# 6. ЗАХВАТ СВЕЖИХ КАДРОВ И ПОТОК ОБРАБОТКИ ВИДЕО
 # ---------------------------------------------------------
+class FrameGrabber:
+    """Отдельный поток для захвата кадров — всегда хранит только последний."""
+
+    def __init__(self, source, is_file=False):
+        self.source = source
+        self.is_file = is_file
+        self.cap = None
+        self.latest_frame = None
+        self.lock = threading.Lock()
+        self.running = False
+        self.connected = False
+
+    def open(self):
+        for method_name, method_flag in [("CAP_ANY", None), ("CAP_FFMPEG", cv2.CAP_FFMPEG)]:
+            try:
+                logging.info(f"   Пробую метод: {method_name}")
+                if method_flag is None:
+                    self.cap = cv2.VideoCapture(self.source)
+                else:
+                    self.cap = cv2.VideoCapture(self.source, method_flag)
+
+                if self.cap.isOpened():
+                    logging.info(f"   ✓ Успешно открыто через {method_name}")
+                    try:
+                        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    except Exception:
+                        pass
+                    self.connected = True
+                    return True
+                else:
+                    self.cap.release()
+                    self.cap = None
+            except Exception as e:
+                logging.error(f"   ✗ Ошибка {method_name}: {e}")
+                self.cap = None
+        self.connected = False
+        return False
+
+    def start(self):
+        self.running = True
+        t = threading.Thread(target=self._grab_loop, daemon=True)
+        t.start()
+
+    def _grab_loop(self):
+        while self.running:
+            if self.cap is None or not self.cap.isOpened():
+                time.sleep(0.1)
+                continue
+            ret, frame = self.cap.read()
+            if not ret:
+                if self.is_file:
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    continue
+                self.connected = False
+                time.sleep(0.05)
+                continue
+            self.connected = True
+            with self.lock:
+                self.latest_frame = frame
+
+    def read(self):
+        with self.lock:
+            frame = self.latest_frame
+            self.latest_frame = None
+        return frame
+
+    def reconnect(self):
+        if self.cap is not None:
+            self.cap.release()
+        self.cap = cv2.VideoCapture(self.source)
+        if self.cap.isOpened():
+            try:
+                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
+            self.connected = True
+            return True
+        self.connected = False
+        return False
+
+    def stop(self):
+        self.running = False
+        if self.cap is not None:
+            self.cap.release()
+
+
 def process_video(system: ParkingSystem):
     logging.info(f"{'=' * 60}")
     logging.info(f"🎬 ЗАПУСК process_video для: {system.location_id}")
     logging.info(f"   Source: {system.source}")
     logging.info(f"   Is file: {system.is_file}")
     logging.info(f"{'=' * 60}")
-    
-    # Попробуем разные методы открытия
-    cap = None
-    methods = [
-        ("CAP_ANY", None),
-        ("CAP_FFMPEG", cv2.CAP_FFMPEG),
-    ]
-    
-    for method_name, method_flag in methods:
-        try:
-            logging.info(f"   Пробую метод: {method_name}")
-            if method_flag is None:
-                cap = cv2.VideoCapture(system.source)
-            else:
-                cap = cv2.VideoCapture(system.source, method_flag)
-            
-            if cap.isOpened():
-                logging.info(f"   ✓ Успешно открыто через {method_name}")
-                break
-            else:
-                logging.warning(f"   ✗ {method_name} не сработал")
-                cap.release()
-                cap = None
-        except Exception as e:
-            logging.error(f"   ✗ Ошибка {method_name}: {e}")
-            cap = None
-    
-    if cap is None or not cap.isOpened():
+
+    grabber = FrameGrabber(system.source, is_file=system.is_file)
+
+    if not grabber.open():
         logging.error(f"✗ ({system.location_id}) НЕ УДАЛОСЬ ОТКРЫТЬ ИСТОЧНИК")
-        logging.error(f"   Проверьте: {system.source}")
         system.connection_status = "Failed to connect"
         system.is_running = False
         return
-    
-    # Настройки для потока
-    try:
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        if not system.is_file:
-            cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000)
-            cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 10000)
-    except Exception as e:
-        logging.warning(f"   Не удалось установить параметры: {e}")
-    
+
     logging.info(f"✅ ({system.location_id}) ИСТОЧНИК УСПЕШНО ОТКРЫТ!")
     system.connection_status = "Connected"
-    
+    grabber.start()
+
     frame_count = 0
     last_results = None
     reconnect_attempts = 0
     max_reconnect_attempts = 5
-    
+
     while system.is_running:
-        ret, frame = cap.read()
-        
-        if not ret:
-            if system.is_file:
-                logging.info(f"🔁 ({system.location_id}) Перематываем видео")
-                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        frame = grabber.read()
+
+        if frame is None:
+            if not grabber.connected and not system.is_file:
+                logging.warning(f"⚠ ({system.location_id}) Потеря соединения, переподключение...")
+                system.connection_status = "Reconnecting..."
+
+                reconnect_attempts += 1
+
+                if reconnect_attempts >= max_reconnect_attempts:
+                    system.current_frame = None
+                    system.connection_status = "Reconnecting (long pause)..."
+                    logging.warning(f"⚠ ({system.location_id}) {max_reconnect_attempts} попыток не удалось, пауза 30с")
+                    time.sleep(30)
+                    reconnect_attempts = 0
+                else:
+                    time.sleep(2)
+
+                if grabber.reconnect():
+                    reconnect_attempts = 0
+                    system.connection_status = "Connected"
+                    logging.info(f"✓ ({system.location_id}) Переподключено")
                 continue
-            
-            logging.warning(f"⚠ ({system.location_id}) Потеря кадра, переподключение...")
-            system.connection_status = "Reconnecting..."
-            cap.release()
-            time.sleep(2)
-            
-            cap = cv2.VideoCapture(system.source)
-            reconnect_attempts += 1
-            
-            if reconnect_attempts >= max_reconnect_attempts:
-                logging.error(f"✗ ({system.location_id}) Превышено количество попыток")
-                system.connection_status = "Connection failed"
-                break
-            
-            if cap.isOpened():
-                reconnect_attempts = 0
-                system.connection_status = "Connected"
-                logging.info(f"✓ ({system.location_id}) Переподключено")
+
+            time.sleep(0.03)
             continue
         
         reconnect_attempts = 0
@@ -549,7 +602,7 @@ def process_video(system: ParkingSystem):
         system.last_update = datetime.now().isoformat()
         time.sleep(0.01)
     
-    cap.release()
+    grabber.stop()
     logging.info(f"✓ ({system.location_id}) Источник отключен")
 
 
