@@ -617,14 +617,28 @@ def normalize_location(loc_raw: str) -> str:
         return "technopark"
     return "ala-too"
 
+def get_system_from_request():
+    if not parking_systems:
+        return None
 
+    loc_raw = request.args.get("location", "")
+    loc = normalize_location(loc_raw)
+
+    if loc in parking_systems:
+        return parking_systems[loc]
+
+    if "ala-too" in parking_systems:
+        return parking_systems["ala-too"]
+
+    return next(iter(parking_systems.values()))
+"""
 def get_system_from_request():
     loc_raw = request.args.get("location", "")
     loc = normalize_location(loc_raw)
     if loc not in parking_systems:
         loc = "ala-too"
     return parking_systems[loc]
-
+"""
 
 @app.route("/")
 def index():
@@ -650,7 +664,37 @@ def auth():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/status")
+def get_status():
+    try:
+        system = get_system_from_request()
+        if system is None:
+            return jsonify({
+                "success": False,
+                "error": "No parking systems initialized"
+            }), 200
 
+        total_spots = len(system.parking_spots)
+        occ = total_spots - system.free_count
+        occupancy_rate = round((occ / total_spots * 100), 1) if total_spots > 0 else 0.0
+
+        return jsonify({
+            "success": True,
+            "location": system.location_id,
+            "is_running": system.is_running,
+            "learning_phase": system.learning_phase,
+            "free_spots": system.free_count,
+            "total_spots": total_spots,
+            "spots_status": [{"id": s["id"], "occupied": s["occupied"]} for s in system.parking_spots],
+            "detected_cars_count": len(system.detected_cars),
+            "detected_cars": system.detected_cars,
+            "last_update": system.last_update,
+            "occupancy_rate": occupancy_rate,
+            "connection_status": system.connection_status
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+"""
 @app.route("/api/status")
 def get_status():
     try:
@@ -674,7 +718,7 @@ def get_status():
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
+"""
 
 @app.route("/api/debug")
 def debug():
@@ -691,7 +735,45 @@ def debug():
         }
     return jsonify(debug_info)
 
+@app.route("/api/video-feed")
+def video_feed():
+    try:
+        system = get_system_from_request()
+        if system is None:
+            return jsonify({
+                "success": False,
+                "error": "No parking systems initialized"
+            }), 200
 
+        logging.info(f"📹 video-feed запрос для {system.location_id}")
+        logging.info(f"   is_running: {system.is_running}")
+        logging.info(f"   has_frame: {system.current_frame is not None}")
+        logging.info(f"   connection_status: {system.connection_status}")
+
+        if system.current_frame is None:
+            return jsonify({
+                "success": False,
+                "error": "Нет кадра",
+                "is_running": system.is_running,
+                "connection_status": system.connection_status,
+                "location": system.location_id
+            }), 200
+
+        ret, buffer = cv2.imencode(".jpg", system.current_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        if not ret:
+            return jsonify({"success": False, "error": "Ошибка кодирования"}), 500
+
+        frame_b64 = base64.b64encode(buffer).decode()
+        return jsonify({
+            "success": True,
+            "frame": f"data:image/jpeg;base64,{frame_b64}",
+            "connection_status": system.connection_status,
+            "location": system.location_id
+        })
+    except Exception as e:
+        logging.error(f"Ошибка video-feed: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+"""
 @app.route("/api/video-feed")
 def video_feed():
     try:
@@ -726,7 +808,7 @@ def video_feed():
         logging.error(f"Ошибка video-feed: {e}")
         return jsonify({"error": str(e)}), 500
 
-
+"""
 # ---------------------------------------------------------
 # 8. ЗАПУСК
 # ---------------------------------------------------------
@@ -755,8 +837,23 @@ def initialize_systems():
     ala_too_system.processing_thread = ala_thread
     ala_thread.start()
     logging.info("✓ Поток Ала-Тоо запущен")
-    time.sleep(1)
+    
+    """
+    ala_too_source = "https://webcam.elcat.kg/Bishkek_Ala-Too_Square/tracks-v1/mono.m3u8"
+    ala_too_system = ParkingSystem(
+        location_id="ala-too",
+        source=ala_too_source,
+        auto_learn=False
+    )
+    ala_too_system.is_running = True
+    parking_systems["ala-too"] = ala_too_system
 
+    ala_thread = threading.Thread(target=process_video, args=(ala_too_system,), daemon=True)
+    ala_too_system.processing_thread = ala_thread
+    ala_thread.start()
+    logging.info("✓ Поток Ала-Тоо запущен")
+    time.sleep(1)
+    """
     # Технопарк
     logging.info("🔍 Проверка видео файла...")
     logging.info(f"   Путь: {TECHNOPARK_VIDEO_PATH}")
