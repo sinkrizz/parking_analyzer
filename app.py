@@ -837,83 +837,6 @@ def initialize_systems():
     ala_too_system.processing_thread = ala_thread
     ala_thread.start()
     logging.info("✓ Поток Ала-Тоо запущен")
-
-    logging.info("🔍 Проверка видео файла...")
-    logging.info(f"   Путь: {TECHNOPARK_VIDEO_PATH}")
-    logging.info(f"   Абсолютный путь: {os.path.abspath(TECHNOPARK_VIDEO_PATH)}")
-    logging.info(f"   Существует: {os.path.exists(TECHNOPARK_VIDEO_PATH)}")
-
-    if os.path.exists("video"):
-        try:
-            files = os.listdir("video")
-            logging.info(f"   Файлы в папке video/: {files}")
-        except Exception as e:
-            logging.error(f"   Ошибка чтения папки: {e}")
-    else:
-        logging.warning("⚠ Папка video/ не найдена!")
-
-    if os.path.exists(TECHNOPARK_VIDEO_PATH):
-        technopark_system = ParkingSystem(
-            location_id="technopark",
-            source=TECHNOPARK_VIDEO_PATH,
-            auto_learn=True
-        )
-        technopark_system.is_running = True
-        parking_systems["technopark"] = technopark_system
-
-        tech_thread = threading.Thread(target=process_video, args=(technopark_system,), daemon=True)
-        technopark_system.processing_thread = tech_thread
-        tech_thread.start()
-
-        logging.info("✓ Технопарк: режим авто-обучения активирован")
-        logging.info("✓ Поток Технопарк запущен")
-    else:
-        logging.warning(f"⚠ Видео не найдено: {TECHNOPARK_VIDEO_PATH}")
-
-    logging.info("✓ Активные локации: " + ", ".join(parking_systems.keys()))
-
-
-def ensure_systems_started():
-    if not parking_systems:
-        initialize_systems()
-
-
-@app.before_request
-def startup_on_first_request():
-    ensure_systems_started()
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
-"""
-# ---------------------------------------------------------
-# 8. ЗАПУСК
-# ---------------------------------------------------------
-def initialize_systems():
-    global parking_systems
-
-    if parking_systems:
-        logging.info("Системы уже инициализированы")
-        return
-
-    logging.info("🚀 Parking Analyzer (YOLO v11) запускается...")
-    logging.info(f"📁 Рабочая папка: {os.getcwd()}")
-    logging.info(f"📦 OpenCV версия: {cv2.__version__}")
-
-    # Ала-Тоо
-    ala_too_source = "https://webcam.elcat.kg/Bishkek_Ala-Too_Square/tracks-v1/mono.m3u8"
-    ala_too_system = ParkingSystem(
-        location_id="ala-too",
-        source=ala_too_source,
-        auto_learn=False
-    )
-    ala_too_system.is_running = True
-    parking_systems["ala-too"] = ala_too_system
-
-    ala_thread = threading.Thread(target=process_video, args=(ala_too_system,), daemon=True)
-    ala_too_system.processing_thread = ala_thread
-    ala_thread.start()
-    logging.info("✓ Поток Ала-Тоо запущен")
     
     ala_too_source = "https://webcam.elcat.kg/Bishkek_Ala-Too_Square/tracks-v1/mono.m3u8"
     ala_too_system = ParkingSystem(
@@ -970,7 +893,7 @@ initialize_systems()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
-"""
+
 """
 if __name__ == "__main__":
     logging.info("🚀 Parking Analyzer (YOLO v11) запускается...")
